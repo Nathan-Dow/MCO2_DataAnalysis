@@ -1,0 +1,1 @@
+C:\Users\Nathan\Desktop\Education\DLSU\TRIMESTER\ 4\CSADPRG\Rust\ Program\csadprg-rust\mco2\target\debug\hello_world.exe: C:\Users\Nathan\Desktop\Education\DLSU\TRIMESTER\ 4\CSADPRG\Rust\ Program\csadprg-rust\mco2\src\main.rs
