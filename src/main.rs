@@ -17,6 +17,7 @@ struct AppState {
 struct Project {
     region: String,
     main_island: String,
+    contractor: String,
     approved_budget: f64,
     contract_cost: f64,
     start_date: NaiveDate,
@@ -83,6 +84,7 @@ fn load_and_process_file() -> Result<(), Box<dyn Error>> {
     let funding_year_idx = headers.iter().position(|h| h == "FundingYear");
     let region_idx = headers.iter().position(|h| h == "Region");
     let main_island_idx = headers.iter().position(|h| h == "MainIsland");
+    let contractor_idx = headers.iter().position(|h| h == "Contractor");
     let approved_budget_idx = headers.iter().position(|h| h == "ApprovedBudgetForContract");
     let contract_cost_idx = headers.iter().position(|h| h == "ContractCost");
     let start_date_idx = headers.iter().position(|h| h == "StartDate");
@@ -118,6 +120,11 @@ fn load_and_process_file() -> Result<(), Box<dyn Error>> {
             Some(v) if !v.is_empty() => v.to_string(),
             _ => { error_count += 1; continue; }
         };
+
+        let contractor = match contractor_idx.and_then(|i| record.get(i)) {
+            Some(v) if !v.is_empty() => v.to_string(),
+            _ => { error_count += 1; continue; }
+        };
         let approved_budget = match approved_budget_idx.and_then(|i| record.get(i)).and_then(|v| v.parse::<f64>().ok()) {
             Some(v) => v,
             None => { error_count += 1; continue; }
@@ -140,6 +147,7 @@ fn load_and_process_file() -> Result<(), Box<dyn Error>> {
         state.projects.push(Project {
             region,
             main_island,
+            contractor,
             approved_budget,
             contract_cost,
             start_date,
@@ -174,6 +182,7 @@ fn generate_reports() -> Result<(), Box<dyn Error>> {
             .push(p);
     }
 
+    // Define Row (make sure this isn't defined elsewhere already)
     #[derive(Clone)]
     struct Row {
         region: String,
@@ -193,19 +202,19 @@ fn generate_reports() -> Result<(), Box<dyn Error>> {
 
         // Compute savings (ApprovedBudgetForContract - ContractCost)
         let mut savings: Vec<f64> = items.iter().map(|p| p.approved_budget - p.contract_cost).collect();
+        // Remove any NaN just in case (defensive)
+        savings.retain(|v| !v.is_nan());
         savings.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median_savings = if savings.is_empty() {
             0.0
         } else if savings.len() % 2 == 1 {
-            // get middle
             savings[savings.len() / 2]
         } else {
-            // get average of two middle values
             let mid = savings.len() / 2;
             (savings[mid - 1] + savings[mid]) / 2.0
         };
 
-        // Compute completion delays
+        // Compute completion delays (days)
         let delays: Vec<i64> = items.iter().map(|p| {
             let d = (p.actual_completion_date - p.start_date).num_days();
             if d < 0 { 0 } else { d }
@@ -232,6 +241,7 @@ fn generate_reports() -> Result<(), Box<dyn Error>> {
             efficiency_score: raw_efficiency,
         });
     }
+
 
     // Normalize efficiency scores to 0–100 range
     if let (Some(min), Some(max)) = (
@@ -317,6 +327,143 @@ fn format_comma_float(val: f64) -> String {
         ])?;
     }
     wtr.flush()?;
+
+    // =============================
+    // Report 2: Contractor Ranking
+    // =============================
+    println!();
+    println!("Report 2: Top Contractors Performance Ranking");
+    println!("(Top 15 by TotalCost, >=5 Projects)");
+    println!();
+
+    // Group by Contractor
+    let mut contractor_group: HashMap<String, Vec<&Project>> = HashMap::new();
+    for p in &projects {
+        contractor_group.entry(p.contractor.clone()).or_default().push(p);
+    }
+
+    #[derive(Debug)]
+    struct ContractorRow {
+        contractor: String,
+        total_cost: f64,
+        num_projects: usize,
+        avg_delay: f64,
+        total_savings: f64,
+        reliability_index: f64,
+        risk_flag: String,
+    }
+
+    let mut contractor_rows: Vec<ContractorRow> = Vec::new();
+
+    for (contractor, items) in contractor_group {
+        if items.len() < 5 {
+            continue;
+        }
+
+        let total_cost: f64 = items.iter().map(|p| p.contract_cost).sum();
+        let total_savings: f64 = items.iter().map(|p| p.approved_budget - p.contract_cost).sum();
+
+        let delays: Vec<i64> = items.iter()
+            .map(|p| (p.actual_completion_date - p.start_date).num_days().max(0))
+            .collect();
+
+        let avg_delay = if delays.is_empty() {
+            0.0
+        } else {
+            delays.iter().sum::<i64>() as f64 / delays.len() as f64
+        };
+
+        let mut reliability_index = (1.0 - (avg_delay / 90.0)) * (total_savings / total_cost) * 100.0;
+        if reliability_index > 100.0 {
+            reliability_index = 100.0;
+        } else if reliability_index < 0.0 {
+            reliability_index = 0.0;
+        }
+
+        let risk_flag = if reliability_index < 50.0 {
+            "High Risk".to_string()
+        } else {
+            "Low Risk".to_string()
+        };
+
+        contractor_rows.push(ContractorRow {
+            contractor,
+            total_cost,
+            num_projects: items.len(),
+            avg_delay,
+            total_savings,
+            reliability_index,
+            risk_flag,
+        });
+    }
+
+    // Sort by descending total cost
+    contractor_rows.sort_by(|a, b| b.total_cost.partial_cmp(&a.total_cost).unwrap());
+
+    // Keep top 15
+    let top_rows: Vec<_> = contractor_rows.into_iter().take(5000).collect();
+
+    // Print formatted table
+    // Helper: truncate long contractor names for display
+    fn truncate_name(name: &str, max_len: usize) -> String {
+        if name.len() > max_len {
+            format!("{}...", &name[..max_len - 3])
+        } else {
+            name.to_string()
+        }
+    }
+
+    // Print formatted table
+    println!(
+        "| {:<4} | {:<45} | {:<18} | {:<12} | {:<10} | {:<16} | {:<18} | {:<10} |",
+        "Rank", "Contractor", "TotalCost", "NumProjects", "AvgDelay", "TotalSavings", "ReliabilityIndex", "RiskFlag"
+    );
+    println!("{}", "-".repeat(165));
+
+    for (i, r) in top_rows.iter().enumerate() {
+        println!(
+            "| {:<4} | {:<45} | {:>18} | {:>12} | {:>10.1} | {:>16} | {:>18.2} | {:<10} |",
+            i + 1,
+            truncate_name(&r.contractor, 45),
+            format_comma_float(r.total_cost),
+            r.num_projects,
+            r.avg_delay,
+            format_comma_float(r.total_savings),
+            r.reliability_index,
+            r.risk_flag
+        );
+    }
+
+
+    println!();
+    println!("Full table exported to report_2_contractor_ranking.csv");
+
+    // Export CSV
+    let mut wtr2 = csv::Writer::from_path("report_2_contractor_ranking.csv")?;
+    wtr2.write_record([
+        "Rank",
+        "Contractor",
+        "TotalCost",
+        "NumProjects",
+        "AvgDelay",
+        "TotalSavings",
+        "ReliabilityIndex",
+        "RiskFlag",
+    ])?;
+
+    for (i, r) in top_rows.iter().enumerate() {
+        wtr2.write_record(&[
+            (i + 1).to_string(),
+            r.contractor.clone(),
+            format!("{:.2}", r.total_cost),
+            r.num_projects.to_string(),
+            format!("{:.2}", r.avg_delay),
+            format!("{:.2}", r.total_savings),
+            format!("{:.2}", r.reliability_index),
+            r.risk_flag.clone(),
+        ])?;
+    }
+    wtr2.flush()?;
 
     Ok(())
 }
