@@ -24,6 +24,28 @@ struct Project {
     funding_year: i32,
 }
 
+// struct Project {
+//     main_island: String,
+//     region: String,
+//     province: String,
+//     legislative_district: String,
+//     municipality: String,
+//     district_engineering_office: String,
+//     project_id: String,
+//     project_name: String,
+//     work_type: String,
+//     approved_budget: f64,
+//     contract_cost: f64,
+//     start_date: NaiveDate,
+//     actual_completion_date: NaiveDate,
+//     contractor_name: String,
+//     contractor_count: i32,
+//     funding_year: i32,
+// }
+
+
+
+
 fn main() -> Result<(), Box<dyn Error>> {
     loop {
         println!("Select Language Implementation:");
@@ -175,8 +197,10 @@ fn generate_reports() -> Result<(), Box<dyn Error>> {
         let median_savings = if savings.is_empty() {
             0.0
         } else if savings.len() % 2 == 1 {
+            // get middle
             savings[savings.len() / 2]
         } else {
+            // get average of two middle values
             let mid = savings.len() / 2;
             (savings[mid - 1] + savings[mid]) / 2.0
         };
@@ -226,29 +250,37 @@ fn generate_reports() -> Result<(), Box<dyn Error>> {
     // Sort descending by EfficiencyScore
     rows.sort_by(|a, b| b.efficiency_score.partial_cmp(&a.efficiency_score).unwrap());
 
+    use num_format::{Locale, ToFormattedString};
+
+fn format_comma_float(val: f64) -> String {
+    // Handles negatives and formats with commas + 2 decimal places
+    let sign = if val.is_sign_negative() { "-" } else { "" };
+    let abs_val = val.abs();
+    let whole = abs_val.trunc() as i64;
+    let fraction = (abs_val.fract() * 100.0).round() as u8;
+    format!("{}{}.{:02}", sign, whole.to_formatted_string(&Locale::en), fraction)
+}
+
+
     // Display Report 1
     println!();
     println!("Report 1: Regional Flood Mitigation Efficiency Summary");
     println!("(Aggregated by Region & MainIsland; 2021–2023 Projects)");
     println!();
+
+    // Header with fixed widths
     println!(
-        "| {:<38} | {:<13} | {:>15} | {:>15} | {:>15} | {:>12} | {:>16} |",
+        "| {:<40} | {:<10} | {:>18} | {:>15} | {:>13} | {:>12} | {:>17} |",
         "Region", "MainIsland", "TotalBudget", "MedianSavings", "AvgDelayDays", "Delay>30Pct", "EfficiencyScore"
     );
-    println!("{}", "-".repeat(160));
+    println!("{}", "-".repeat(146));
 
-    fn format_comma_float(val: f64) -> String {
-        use num_format::{Locale, ToFormattedString};
-        let whole = val.trunc() as i64;
-        let fraction = (val.fract().abs() * 100.0).round() as u8;
-        format!("{}.{:02}", whole.to_formatted_string(&Locale::en), fraction)
-    }
-
+    // Single loop: print each row once
     for r in &rows {
         println!(
-            "| {:<38} | {:<13} | {:>15} | {:>15} | {:>15.2} | {:>12.1} | {:>16.2} |",
-            r.region,
-            r.main_island,
+            "| {:<40} | {:<10} | {:>18} | {:>15} | {:>13.2} | {:>12.1} | {:>17.2} |",
+            r.region.trim(),
+            r.main_island.trim(),
             format_comma_float(r.total_budget),
             format_comma_float(r.median_savings),
             r.avg_delay,
@@ -259,6 +291,8 @@ fn generate_reports() -> Result<(), Box<dyn Error>> {
 
     println!();
     println!("Full table exported to report_1_regional_summary.csv");
+
+
 
     // Export CSV (sorted)
     let mut wtr = csv::Writer::from_path("report_1_regional_summary.csv")?;
