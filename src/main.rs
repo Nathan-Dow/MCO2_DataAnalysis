@@ -20,6 +20,7 @@ struct Project {
     contractor: String,
     approved_budget: f64,
     contract_cost: f64,
+    type_of_work: String,
     start_date: NaiveDate,
     actual_completion_date: NaiveDate,
     funding_year: i32,
@@ -85,6 +86,7 @@ fn load_and_process_file() -> Result<(), Box<dyn Error>> {
     let region_idx = headers.iter().position(|h| h == "Region");
     let main_island_idx = headers.iter().position(|h| h == "MainIsland");
     let contractor_idx = headers.iter().position(|h| h == "Contractor");
+    let type_of_work_idx = headers.iter().position(|h| h == "TypeOfWork");
     let approved_budget_idx = headers.iter().position(|h| h == "ApprovedBudgetForContract");
     let contract_cost_idx = headers.iter().position(|h| h == "ContractCost");
     let start_date_idx = headers.iter().position(|h| h == "StartDate");
@@ -125,6 +127,12 @@ fn load_and_process_file() -> Result<(), Box<dyn Error>> {
             Some(v) if !v.is_empty() => v.to_string(),
             _ => { error_count += 1; continue; }
         };
+
+        let type_of_work = match type_of_work_idx.and_then(|i| record.get(i)) {
+            Some(v) if !v.is_empty() => v.to_string(),
+            _ => { error_count += 1; continue; }
+        };
+
         let approved_budget = match approved_budget_idx.and_then(|i| record.get(i)).and_then(|v| v.parse::<f64>().ok()) {
             Some(v) => v,
             None => { error_count += 1; continue; }
@@ -148,6 +156,7 @@ fn load_and_process_file() -> Result<(), Box<dyn Error>> {
             region,
             main_island,
             contractor,
+            type_of_work,
             approved_budget,
             contract_cost,
             start_date,
@@ -464,6 +473,184 @@ fn format_comma_float(val: f64) -> String {
         ])?;
     }
     wtr2.flush()?;
+
+    // =============================
+    // Report 3: Annual Project Type Cost Overrun Trends
+    // =============================
+    println!();
+    println!("Report 3: Annual Project Type Cost Overrun Trends");
+    println!("(Grouped by FundingYear and TypeOfWork)");
+    println!();
+
+    use std::fs::File;
+    use serde_json::json;
+
+    // Group by (FundingYear, TypeOfWork)
+    let mut grouped3: HashMap<(i32, String), Vec<&Project>> = HashMap::new();
+    for p in &projects {
+        grouped3
+            .entry((p.funding_year, p.type_of_work.clone()))
+            .or_default()
+            .push(p);
+    }
+
+    #[derive(Clone)]
+    struct Row3 {
+        funding_year: i32,
+        type_of_work: String,
+        total_projects: usize,
+        avg_savings: f64,
+        overrun_rate: f64,
+        yoy_change: f64,
+    }
+
+    let mut rows3: Vec<Row3> = Vec::new();
+
+    // Compute 2021 baseline averages
+    let mut baseline_savings: HashMap<String, f64> = HashMap::new();
+    for ((year, work_type), items) in &grouped3 {
+        if *year == 2021 {
+            let avg_savings = if items.is_empty() {
+                0.0
+            } else {
+                items.iter()
+                    .map(|p| p.approved_budget - p.contract_cost)
+                    .sum::<f64>() / (items.len() as f64)
+            };
+            baseline_savings.insert(work_type.clone(), avg_savings);
+        }
+    }
+
+    // Fill per (year, type_of_work)
+    for ((year, work_type), items) in grouped3 {
+        let total_projects = items.len();
+
+        let savings: Vec<f64> = items.iter().map(|p| p.approved_budget - p.contract_cost).collect();
+        let avg_savings = if savings.is_empty() {
+            0.0
+        } else {
+            savings.iter().sum::<f64>() / (savings.len() as f64)
+        };
+
+        let overrun_rate = if savings.is_empty() {
+            0.0
+        } else {
+            let negative_count = savings.iter().filter(|s| **s < 0.0).count();
+            (negative_count as f64) * 100.0 / (savings.len() as f64)
+        };
+
+        // Compute YoY change from 2021 baseline
+        let baseline = baseline_savings.get(&work_type).cloned().unwrap_or(0.0);
+        let yoy_change = if baseline.abs() < f64::EPSILON {
+            0.0
+        } else {
+            ((avg_savings - baseline) / baseline) * 100.0
+        };
+
+        rows3.push(Row3 {
+            funding_year: year,
+            type_of_work: work_type,
+            total_projects,
+            avg_savings,
+            overrun_rate,
+            yoy_change,
+        });
+    }
+
+    // Sort by year then work type
+    rows3.sort_by(|a, b| {
+        a.funding_year.cmp(&b.funding_year)
+            .then_with(|| a.type_of_work.cmp(&b.type_of_work))
+    });
+
+    // Print formatted table
+    // Print formatted table
+    println!(
+        "{:<12} | {:<40} | {:>15} | {:>15} | {:>12} | {:>12} |",
+        "FundingYear", "TypeOfWork", "TotalProjects", "AvgSavings", "OverrunRate", "YoYChange"
+    );
+    println!("{}", "-".repeat(118));
+
+    for r in &rows3 {
+        let type_of_work_display = if r.type_of_work.len() > 40 {
+            format!("{}...", &r.type_of_work[..37])
+        } else {
+            r.type_of_work.trim().to_string()
+        };
+
+        println!(
+            "| {:<12} | {:<40} | {:>15} | {:>15.2} | {:>11.1}% | {:>11.1}% |",
+            r.funding_year,
+            type_of_work_display,
+            r.total_projects,
+            r.avg_savings,
+            r.overrun_rate,
+            r.yoy_change
+        );
+    }
+
+
+    println!();
+    println!("(Full table exported to report3_annual_trends.csv)");
+
+    // Export CSV
+    let mut wtr3 = csv::Writer::from_path("report3_annual_trends.csv")?;
+    wtr3.write_record([
+        "FundingYear",
+        "TypeOfWork",
+        "TotalProjects",
+        "AvgSavings",
+        "OverrunRate",
+        "YoYChange",
+    ])?;
+    for r in &rows3 {
+        wtr3.write_record(&[
+            r.funding_year.to_string(),
+            r.type_of_work.clone(),
+            r.total_projects.to_string(),
+            format!("{:.2}", r.avg_savings),
+            format!("{:.2}", r.overrun_rate),
+            format!("{:.2}", r.yoy_change),
+        ])?;
+    }
+    wtr3.flush()?;
+
+    // =============================
+    // Summary Stats
+    // =============================
+    let total_projects = projects.len();
+    let total_contractors = projects.iter().map(|p| p.contractor.clone()).collect::<std::collections::HashSet<_>>().len();
+    let total_provinces = projects.iter().map(|p| p.region.clone()).collect::<std::collections::HashSet<_>>().len();
+
+    let total_savings: f64 = projects.iter().map(|p| p.approved_budget - p.contract_cost).sum();
+    let global_avg_delay: f64 = if projects.is_empty() {
+        0.0
+    } else {
+        projects
+            .iter()
+            .map(|p| (p.actual_completion_date - p.start_date).num_days() as f64)
+            .sum::<f64>()
+            / (projects.len() as f64)
+    };
+
+    let summary = json!({
+        "total_projects": total_projects,
+        "total_contractors": total_contractors,
+        "total_provinces": total_provinces,
+        "global_avg_delay": global_avg_delay,
+        "total_savings": total_savings
+    });
+
+    let file = File::create("summary.json")?;
+    serde_json::to_writer_pretty(file, &summary)?;
+
+    println!();
+    println!("Summary Stats (summary.json):");
+    println!("{}", summary.to_string());
+    println!();
+    println!("Back to Report Selection (Y/N):");
+
+
 
     Ok(())
 }
